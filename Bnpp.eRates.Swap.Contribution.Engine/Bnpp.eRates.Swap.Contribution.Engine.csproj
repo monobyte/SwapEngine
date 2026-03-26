@@ -1,0 +1,24 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="Bnpp.eRates.Swap.Contribution.Engine.Tests" />
+  </ItemGroup>
+
+  <!-- TODO: Adjust paths to match your actual solution layout -->
+  <ItemGroup>
+    <ProjectReference Include="..\Bnpp.eRates.Contribution.Library.Common\Bnpp.eRates.Contribution.Library.Common.csproj" />
+    <ProjectReference Include="..\Bnpp.eRates.Contribution.Model.Common\Bnpp.eRates.Contribution.Model.Common.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.AspNetCore.SignalR" Version="1.*" />
+    <PackageReference Include="NLog.Web.AspNetCore" Version="5.*" />
+  </ItemGroup>
+
+</Project>

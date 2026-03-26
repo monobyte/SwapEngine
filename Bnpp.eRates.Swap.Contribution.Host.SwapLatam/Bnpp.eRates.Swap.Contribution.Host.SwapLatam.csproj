@@ -1,0 +1,14 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Bnpp.eRates.Swap.Contribution.Engine\Bnpp.eRates.Swap.Contribution.Engine.csproj" />
+    <ProjectReference Include="..\Bnpp.eRates.Swap.Contribution.Products\Bnpp.eRates.Swap.Contribution.Products.csproj" />
+  </ItemGroup>
+
+</Project>

@@ -34,10 +34,10 @@ public class SwapContributionHubAuthorizationTests
     {
         var product = ProductDefinitionFactory.CreateWithCapabilities(
             SwapContributionCapability.AdjustAskMidSpread);
-        product.Policies.Write = "SwapLatamWrite";
+        product.Policies.Write = "swap_latam_write";
 
         var fixture = new HubTestFixture(product);
-        fixture.SetupAuthorizationFails("SwapLatamWrite");
+        fixture.SetupAuthorizationFails("swap_latam_write");
         fixture.RebuildHub();
 
         var ex = await Assert.ThrowsAsync<HubException>(

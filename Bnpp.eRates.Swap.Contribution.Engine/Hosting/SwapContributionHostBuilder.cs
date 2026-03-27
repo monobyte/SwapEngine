@@ -302,7 +302,6 @@ public class SwapContributionApp<TContribution, TInstrument, TTiers>
         services.AddSingleton(appConfig);
 
         // SmartBase services (resolved from Ninject kernel)
-        services.AddSingleton(kernel.Get<IOrionConnectionStateMonitor>());
         services.AddSingleton(kernel.Get<IInstrumentProvider<TInstrument>>());
         services.AddSingleton(
             kernel.Get<IContributionProvider<SwapContributionUpdate<TContribution>, TContribution>>());

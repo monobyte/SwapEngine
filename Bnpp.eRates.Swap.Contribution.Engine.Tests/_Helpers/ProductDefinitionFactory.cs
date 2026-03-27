@@ -24,8 +24,8 @@ internal static class ProductDefinitionFactory
             ThrottleDelay = 1.0,
             Policies = new SwapPolicyConfig
             {
-                Read = "TestSwapRead",
-                Write = "TestSwapWrite"
+                Read = "test_swap_read",
+                Write = "test_swap_write"
             },
             Capabilities = new List<string>
             {

@@ -4,15 +4,23 @@ using Bnpp.eRates.Swap.Contribution.Products.SwapInflation;
 
 // ──────────────────────────────────────────────────────────────────────
 // EXAMPLE: Product host with custom overrides
-// This shows the escape hatch for products that need non-standard behaviour.
+// This shows the escape hatches for products that need non-standard behaviour.
 // Most products will NOT need this — just the 5-line version.
 // ──────────────────────────────────────────────────────────────────────
 
 SwapContributionHostBuilder
     .Create<SwapInflationContribution, SwapInflationInstrument, EmeaSwapTiers>(args)
+    .ConfigureNinject(kernel =>
+    {
+        // Example: load an additional SmartBase Ninject module
+        // kernel.Load(new SomeCustomSmartBaseModule());
+
+        // Example: override a default Ninject binding
+        // kernel.Rebind<ICustomService>().To<SpecialImplementation>().InSingletonScope();
+    })
     .ConfigureServices(services =>
     {
-        // Example: replace the default contribution provider with a custom one
+        // Example: replace a default MS DI service with a custom one
         // services.AddSingleton<IContributionProvider<...>, MyCustomProvider>();
 
         // Example: add a product-specific service
@@ -22,8 +30,5 @@ SwapContributionHostBuilder
     {
         // Example: add a custom REST endpoint
         // app.MapGet("/api/inflation/custom", () => "custom data");
-
-        // Example: add custom middleware
-        // app.UseMiddleware<InflationSpecificMiddleware>();
     })
     .Run();

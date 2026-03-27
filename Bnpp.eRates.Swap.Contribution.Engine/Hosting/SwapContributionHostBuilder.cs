@@ -1,8 +1,8 @@
+using System.Text.Json.Serialization;
 using Bnpp.eRates.Contribution.Model.Common;
 using Bnpp.eRates.Swap.Contribution.Engine.Configuration;
-using Bnpp.eRates.Swap.Contribution.Engine.Feeds;
 using Bnpp.eRates.Swap.Contribution.Engine.Model;
-using Bnpp.eRates.Swap.Contribution.Engine.Providers;
+using Bnpp.eRates.Swap.Contribution.Engine.Ninject;
 using Bnpp.eRates.Web.Configuration;
 using Bnpp.eRates.Web.ConnectionMonitor;
 using Bnpp.eRates.Web.Heartbeat;
@@ -11,12 +11,13 @@ using Bnpp.eRates.Web.Helper.Extensions;
 using Bnpp.eRates.Web.JWTAuthentication.Helper;
 using Bnpp.eRates.Web.Market;
 using Bnpp.eRates.Web.User;
-using Bnpp.SmartBase.Orion.Orion;
 using CommunityToolkit.Diagnostics;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.SignalR;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.FeatureManagement;
+using Ninject;
 using NLog;
 using NLog.Web;
 
@@ -55,6 +56,7 @@ public class SwapContributionApp<TContribution, TInstrument, TTiers>
     private readonly string[] _args;
     private Action<IServiceCollection>? _configureServices;
     private Action<WebApplication>? _configureApp;
+    private Action<IKernel>? _configureNinject;
 
     internal SwapContributionApp(string[] args)
     {
@@ -80,6 +82,18 @@ public class SwapContributionApp<TContribution, TInstrument, TTiers>
         Action<WebApplication> configure)
     {
         _configureApp = configure;
+        return this;
+    }
+
+    /// <summary>
+    /// Configure the Ninject kernel before services are resolved.
+    /// Use this to load additional Ninject modules required by product-specific
+    /// SmartBase dependencies, or to override default bindings.
+    /// </summary>
+    public SwapContributionApp<TContribution, TInstrument, TTiers> ConfigureNinject(
+        Action<IKernel> configure)
+    {
+        _configureNinject = configure;
         return this;
     }
 
@@ -136,14 +150,59 @@ public class SwapContributionApp<TContribution, TInstrument, TTiers>
             builder.Services.AddCors();
             builder.Services.AddControllers();
             builder.Services.AddEndpointsApiExplorer();
-            builder.Services.AddSwaggerGen();
-            builder.Services.AddSignalR();
 
+            // NLog: Setup NLog for Dependency injection
             builder.AddNlog();
+
+            // Global exception handler
             builder.AddExceptionHandling();
+
+            // HTTP header logging (useful for reverse proxy debugging)
             builder.AddHttpLogging();
+
             builder.AddOpenTelemetry(appConfig, currentEndpoint);
             builder.AddAuthentication(appConfig, currentEndpoint);
+
+            // Authorization policies from config (claim-based, loaded from policysettings.json)
+            builder.Services.AddCustomAuthorizationPolicies(appConfig);
+
+            // Health checks (memory + SignalR hub connectivity)
+            var signalrHubLocation = $"https://{Environment.MachineName}:{currentEndpoint.Port}{currentEndpoint.Path}";
+            var signalrHubEmptyToken = TokenHelper.GetEmptyToken(appConfig);
+            if (instance.IsDevelopment())
+            {
+                signalrHubLocation = $"https://localhost:{currentEndpoint.Port}{currentEndpoint.Path}";
+            }
+            builder.Services.AddHealthChecks()
+                .AddProcessAllocatedMemoryHealthCheck(3072); // 3GB max allocated memory
+
+            // Hosting certificate and port configuration
+            builder.AddHostingCertificateConfiguration(logger, appConfig, currentEndpoint);
+
+            // JSON: output enums as strings
+            builder.Services.ConfigureHttpJsonOptions(options =>
+            {
+                options.SerializerOptions.Converters.Add(new JsonStringEnumConverter());
+            });
+            builder.Services.Configure<Microsoft.AspNetCore.Mvc.JsonOptions>(options =>
+            {
+                options.JsonSerializerOptions.Converters.Add(new JsonStringEnumConverter());
+            });
+
+            // Feature management (reads "FeatureManagement" config section)
+            builder.Services.AddFeatureManagement();
+
+            // Swagger (environment-aware configuration)
+            builder.AddSwaggerOptions(instance);
+
+            // SignalR: use Name claim as the user identifier
+            // WARNING: Requires that the JWT source ensures the Name claim is unique
+            builder.Services.AddSignalR();
+            builder.Services.AddSingleton<IUserIdProvider, NameUserIdProvider>();
+
+            // HTTP context + user provider
+            builder.Services.AddHttpContextAccessor();
+            builder.Services.AddTransient<IUserProvider, UserProvider>();
 
             // ── Phase 4: Engine services ──
 
@@ -156,6 +215,9 @@ public class SwapContributionApp<TContribution, TInstrument, TTiers>
             // ── Phase 6: Build app and configure pipeline ──
 
             var app = builder.Build();
+
+            // Log config via ILogger (available via diagnostic source after build)
+            builder.Configuration.LogConfig(appConfig, app.Logger);
 
             app.UseMiddleware<HostnameInfoMiddleware>();
             app.UseAuthentication();
@@ -201,72 +263,64 @@ public class SwapContributionApp<TContribution, TInstrument, TTiers>
 
     /// <summary>
     /// Register all engine services into the MS DI container.
-    /// This replaces both the Ninject module (Library.*.Ioc) and the Host's BuilderIoc.
+    ///
+    /// Architecture: Ninject builds the deep SmartBase/Orion dependency tree
+    /// (WireClientFactory, OrionSubscriptionFactory, IDispatcher, etc.) because
+    /// these libraries ship with their own Ninject modules. We then bridge the
+    /// resolved singletons into MS DI so they're available to ASP.NET services
+    /// (Hub, Controller, SubscriptionManager).
+    ///
+    /// This replaces both the per-product Library.*.Ioc (Ninject module) and
+    /// the per-product Host BuilderIoc (Ninject→MS DI bridge).
     /// </summary>
-    private static void RegisterEngineServices(
+    private void RegisterEngineServices(
         IServiceCollection services,
         SwapProductDefinition product,
         AppConfig appConfig)
     {
+        // ── Ninject kernel: SmartBase / Orion dependency tree ──
+
+        var kernel = new StandardKernel();
+        kernel.Bind<AppConfig>().ToConstant(appConfig).InSingletonScope();
+
+        // Load JWT Authentication module (common to all products)
+        kernel.Load(new Bnpp.eRates.Web.JWTAuthentication.Ioc.Ioc());
+
+        // Load the generic contribution module (replaces per-product Library Ioc)
+        kernel.Load(new SwapContributionNinjectModule<TContribution, TInstrument, TTiers>(
+            product, appConfig));
+
+        // User Ninject customisation (additional modules, binding overrides)
+        _configureNinject?.Invoke(kernel);
+
+        // ── Bridge: Ninject → MS DI ──
+        // Keep the kernel alive for the app lifetime
+        services.AddSingleton(kernel);
+
         // Configuration
         services.AddSingleton(product);
         services.AddSingleton(appConfig);
 
-        // Instrument feed (single per product)
-        services.AddSingleton<ISwapInstrumentFeed<TInstrument>>(sp =>
-        {
-            var config = appConfig.GetConnection(product.Feeds.Instruments.ConnectionKey);
-            return new GenericSwapInstrumentFeed<TInstrument>(
-                config,
-                product.Id,
-                sp.GetRequiredService<WireClientFactory>(),
-                sp.GetRequiredService<OrionFeedMonitorFeed>(),
-                sp.GetRequiredService<OrionSubscriptionFactory>());
-        });
+        // SmartBase services (resolved from Ninject kernel)
+        services.AddSingleton(kernel.Get<IOrionConnectionStateMonitor>());
+        services.AddSingleton(kernel.Get<IInstrumentProvider<TInstrument>>());
+        services.AddSingleton(
+            kernel.Get<IContributionProvider<SwapContributionUpdate<TContribution>, TContribution>>());
 
-        // Instrument provider
-        services.AddSingleton<IInstrumentProvider<TInstrument>>(sp =>
-            new GenericSwapInstrumentProvider<TInstrument>(
-                sp.GetRequiredService<IDispatcher>(),
-                sp.GetRequiredService<ISwapInstrumentFeed<TInstrument>>()));
+        // User info and market (resolved from Ninject)
+        services.AddSingleton(kernel.Get<UserInfoProvider>());
+        services.AddSingleton(kernel.Get<UserMarketProvider>());
 
-        // Contribution feeds (config-driven array — 1 for Latam, 4 for Inflation, etc.)
-        services.AddSingleton<IContributionFeed<TInstrument, TTiers>[]>(sp =>
-        {
-            var instrumentProvider = sp.GetRequiredService<IInstrumentProvider<TInstrument>>();
-            return product.Feeds.Contributions.Select(feedConfig =>
-            {
-                var orionConfig = appConfig.GetConnection(feedConfig.ConnectionKey);
-                return (IContributionFeed<TInstrument, TTiers>)
-                    new GenericSwapContributionFeed<TContribution, TInstrument, TTiers>(
-                        orionConfig,
-                        sp.GetRequiredService<WireClientFactory>(),
-                        sp.GetRequiredService<OrionFeedMonitorFeed>(),
-                        sp.GetRequiredService<OrionSubscriptionFactory>(),
-                        sp.GetRequiredService<IOrionClientFactory>(),
-                        sp.GetRequiredService<IOrionFunctionCall>(),
-                        instrumentProvider);
-            }).ToArray();
-        });
-
-        // Contribution provider
-        services.AddSingleton<IContributionProvider<SwapContributionUpdate<TContribution>, TContribution>>(sp =>
-            new GenericSwapContributionProvider<TContribution, TInstrument, TTiers>(
-                sp.GetRequiredService<IDispatcher>(),
-                sp.GetRequiredService<IContributionFeed<TInstrument, TTiers>[]>()));
+        // ── MS DI native services ──
 
         // Connection monitoring
         services.AddSingleton<ConnectionMonitorClient>();
         services.AddSingleton<ConnectionManager>();
 
-        // User services
-        services.AddSingleton<UserInfoProvider>();
-        services.AddSingleton<UserMarketProvider>();
-
         // Heartbeat
         services.AddSingleton<HeartbeatProvider>();
 
-        // Subscription manager (the core coordination service)
+        // Subscription manager (needs IHubContext from MS DI + Ninject-bridged providers)
         services.AddSingleton<
             SwapContributionSubscriptionManager<TContribution, TInstrument, TTiers>>();
     }

@@ -5,7 +5,7 @@ namespace Bnpp.eRates.Swap.Contribution.Engine.Tests.Hosting;
 
 /// <summary>
 /// Tests for the SwapContributionHostBuilder static factory and
-/// SwapContributionApp fluent API (ConfigureServices, ConfigureApp).
+/// SwapContributionApp fluent API (ConfigureServices, ConfigureApp, ConfigureNinject).
 /// </summary>
 public class SwapContributionHostBuilderTests
 {
@@ -41,12 +41,24 @@ public class SwapContributionHostBuilderTests
     }
 
     [Fact]
-    public void FluentApi_AllowsChaining()
+    public void ConfigureNinject_ReturnsSameInstance_ForFluency()
     {
-        // Verify the complete fluent chain compiles and works
+        var app = SwapContributionHostBuilder
+            .Create<TestContribution, TestInstrument, TestTiers>(Array.Empty<string>());
+
+        var result = app.ConfigureNinject(kernel => { });
+
+        Assert.Same(app, result);
+    }
+
+    [Fact]
+    public void FluentApi_AllowsFullChaining()
+    {
+        // Verify the complete fluent chain (all three callbacks) compiles and works
         var app = SwapContributionHostBuilder
             .Create<TestContribution, TestInstrument, TestTiers>(Array.Empty<string>())
-            .ConfigureServices(services => { /* custom service */ })
+            .ConfigureNinject(kernel => { /* custom Ninject module */ })
+            .ConfigureServices(services => { /* custom MS DI service */ })
             .ConfigureApp(app => { /* custom middleware */ });
 
         Assert.NotNull(app);
